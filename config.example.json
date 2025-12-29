@@ -1,0 +1,9 @@
+{
+    "setup_complete": false,
+    "db_path": "C:/path/to/your/merge_all.db",
+    "wechat_exe_path": "C:/path/to/WeChat.exe",
+    "wxid": "",
+    "key": "",
+    "export_path": ""
+}
+

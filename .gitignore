@@ -1,0 +1,41 @@
+# User-specific files (auto-generated)
+config.json
+
+# Exported chat data (contains private messages)
+exports/txt/*.txt
+exports/json/*.json
+exports/html/*.html
+exports/csv/*.csv
+
+# User data folder (decrypted databases)
+data/
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
