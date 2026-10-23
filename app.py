@@ -15,8 +15,11 @@ import time
 import re
 import signal
 from datetime import datetime
+from html import escape as esc
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, send_file
+
+import media_export
 
 # Import our decryption module
 try:
@@ -728,247 +731,208 @@ def export_chat_json(db_path, contact_id, contact_name):
     return str(filepath), filename
 
 
+EXPORT_HTML_CSS = '''
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0b141a; min-height: 100vh; }
+.header { background: #1f2c34; padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.1); position: sticky; top: 0; z-index: 10; }
+.header h1 { color: #e9edef; font-size: 1.2rem; font-weight: 500; }
+.header p { color: #8696a0; font-size: 0.85rem; margin-top: 4px; }
+.chat { max-width: 900px; margin: 0 auto; padding: 20px; }
+.date-separator { background: #182229; color: #8696a0; padding: 6px 16px; border-radius: 8px; font-size: 0.8rem; margin: 16px auto; display: block; width: fit-content; }
+.message { display: flex; margin-bottom: 4px; }
+.message.sent { justify-content: flex-end; }
+.message.received { justify-content: flex-start; }
+.bubble { max-width: 65%; padding: 8px 12px; border-radius: 8px; }
+.sent .bubble { background: #005c4b; border-top-right-radius: 0; }
+.received .bubble { background: #1f2c34; border-top-left-radius: 0; }
+.sender { color: #00a884; font-size: 0.75rem; font-weight: 500; margin-bottom: 2px; }
+.text { color: #e9edef; font-size: 0.9rem; line-height: 1.4; word-break: break-word; white-space: pre-wrap; }
+.text a { color: #53bdeb; }
+.media img, .media video { display: block; max-width: 100%; max-height: 420px; border-radius: 6px; }
+.media audio { display: block; width: 260px; max-width: 100%; }
+.missing { color: #8696a0; font-size: 0.85rem; font-style: italic; }
+.time { color: rgba(255,255,255,0.5); font-size: 0.65rem; text-align: right; margin-top: 4px; }
+.footer { text-align: center; padding: 40px; color: #667781; font-size: 0.85rem; }
+'''
+
+
+def get_wx_dir():
+    """Live WeChat account folder, it holds the FileStorage media files"""
+    config = load_config()
+    wx_dir = config.get('wx_dir', '')
+    if wx_dir and Path(wx_dir).is_dir():
+        return Path(wx_dir)
+
+    wxid = get_my_wxid()
+    if wxid and DECRYPT_AVAILABLE:
+        data_dir = get_wechat_data_dir()
+        if data_dir and (Path(data_dir) / wxid).is_dir():
+            return Path(data_dir) / wxid
+    return None
+
+
 def export_chat_html(db_path, contact_id, contact_name):
-    """Export chat to HTML with WhatsApp-style design"""
+    """
+    Export chat to a folder: index.html plus media/ with images, videos and
+    voice notes. Returns (index.html path, folder name, stats).
+    """
+    wx_dir = get_wx_dir()
+
+    safe_name = re.sub(r'[<>:"/\\|?*]', '_', contact_name)
+    folder_name = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    out_dir = EXPORTS_DIR / "html" / folder_name
+    media_dir = out_dir / "media"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+
     is_group = '@chatroom' in contact_id
-    
+
     cursor.execute("""
-        SELECT StrContent, Type, IsSender, CreateTime, BytesExtra
+        SELECT localId, MsgSvrID, StrContent, Type, IsSender, CreateTime, BytesExtra
         FROM MSG
         WHERE StrTalker = ? AND Type IN (1, 49, 34, 3, 43)
         ORDER BY CreateTime ASC
     """, (contact_id,))
-    
+    rows = cursor.fetchall()
+
+    # First pass: work out the sender of each group message
+    parsed = []
+    sender_wxids = set()
+    for row in rows:
+        content = row[2] or ''
+        is_sender = row[4] == 1
+        entries = media_export.parse_bytes_extra(row[6])
+        sender_wxid = None
+
+        if is_group and not is_sender:
+            if ':\n' in content:
+                head, rest = content.split(':\n', 1)
+                if len(head) < 50:
+                    sender_wxid = head
+                    content = rest
+            if not sender_wxid:
+                sender_wxid = media_export.find_sender_wxid(entries)
+            if sender_wxid:
+                sender_wxids.add(sender_wxid)
+
+        parsed.append((row, content, entries, sender_wxid))
+
+    senders = {}
+    if sender_wxids:
+        try:
+            placeholders = ','.join('?' * len(sender_wxids))
+            cursor.execute(f"SELECT UserName, NickName FROM Contact WHERE UserName IN ({placeholders})", list(sender_wxids))
+            for r in cursor.fetchall():
+                if r[1]:
+                    senders[r[0]] = r[1]
+        except Exception as e:
+            print(f"Error getting sender names: {e}")
+
+    stats = {
+        'messages': 0,
+        'images': 0, 'images_missing': 0,
+        'videos': 0, 'videos_missing': 0,
+        'voice': 0, 'voice_missing': 0, 'voice_not_converted': 0,
+    }
     messages_html = []
     current_date = None
-    senders = {}
-    sender_wxids = set()
-    
-    rows = cursor.fetchall()
-    
-    # First pass: collect sender wxids for group chats
-    if is_group:
-        for row in rows:
-            content = row[0] or ''
-            if not row[2] and ':\n' in content:  # Not sent by me
-                parts = content.split(':\n', 1)
-                if len(parts) == 2 and len(parts[0]) < 50:
-                    sender_wxids.add(parts[0])
-        
-        # Get nicknames
-        if sender_wxids:
-            try:
-                placeholders = ','.join('?' * len(sender_wxids))
-                cursor.execute(f"SELECT UserName, NickName FROM Contact WHERE UserName IN ({placeholders})", list(sender_wxids))
-                for r in cursor.fetchall():
-                    senders[r[0]] = r[1]
-            except:
-                pass
-    
-    for row in rows:
-        content = row[0] or ''
-        msg_type = row[1]
-        is_sender = row[2] == 1
-        msg_time = datetime.fromtimestamp(row[3]) if row[3] else None
-        sender_name = None
-        
-        # Extract sender for group chats
-        if is_group and not is_sender and ':\n' in content:
-            parts = content.split(':\n', 1)
-            if len(parts) == 2 and len(parts[0]) < 50:
-                sender_wxid = parts[0]
-                sender_name = senders.get(sender_wxid, sender_wxid)
-                content = parts[1]
-        
-        # Date separator
+
+    for seq, (row, content, entries, sender_wxid) in enumerate(parsed):
+        svr_id = row[1]
+        msg_type = row[3]
+        is_sender = row[4] == 1
+        msg_time = datetime.fromtimestamp(row[5]) if row[5] else None
+        file_name = f"{seq:05d}_{msg_time.strftime('%Y%m%d_%H%M%S') if msg_time else 'x'}"
+        body = None
+
+        if msg_type == 3:
+            rel = media_export.export_image(entries, wx_dir, media_dir, file_name) if wx_dir else None
+            if rel:
+                stats['images'] += 1
+                body = f'<div class="media"><a href="{esc(rel)}" target="_blank"><img src="{esc(rel)}" loading="lazy"></a></div>'
+            else:
+                stats['images_missing'] += 1
+                body = '<div class="missing">🖼️ Image not available on disk</div>'
+
+        elif msg_type == 43:
+            rel = media_export.export_video(entries, wx_dir, media_dir, file_name) if wx_dir else None
+            if rel:
+                stats['videos'] += 1
+                body = f'<div class="media"><video controls preload="metadata" src="{esc(rel)}"></video></div>'
+            else:
+                stats['videos_missing'] += 1
+                body = '<div class="missing">🎬 Video not available on disk</div>'
+
+        elif msg_type == 34:
+            rel, kind = media_export.export_voice(cursor, svr_id, media_dir, file_name)
+            transcript = ''
+            match = re.search(r'翻译结果：(.+)', content)
+            if match:
+                transcript = f'<div class="text">{esc(match.group(1).strip())}</div>'
+            if kind == 'wav':
+                stats['voice'] += 1
+                body = f'<div class="media"><audio controls preload="none" src="{esc(rel)}"></audio></div>{transcript}'
+            elif kind == 'silk':
+                stats['voice'] += 1
+                stats['voice_not_converted'] += 1
+                body = (f'<div class="missing"><a href="{esc(rel)}" download>🎤 Voice note (.silk)</a>'
+                        f' - install pilk to get playable WAV files</div>{transcript}')
+            else:
+                stats['voice_missing'] += 1
+                body = transcript or '<div class="missing">🎤 Voice note not available</div>'
+
+        elif msg_type == 49:
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', content, re.IGNORECASE)
+            body = f'<div class="text">📎 {esc(title_match.group(1))}</div>' if title_match else '<div class="text">📎 [Link/File]</div>'
+
+        elif content.startswith('<voipmsg') or 'VoIPBubbleMsg' in content:
+            body = '<div class="text">📞 [Call]</div>'
+
+        elif content.strip() and not content.startswith('<'):
+            body = f'<div class="text">{esc(content)}</div>'
+
+        if not body:
+            continue
+
+        stats['messages'] += 1
+
         if msg_time:
             msg_date = msg_time.strftime('%B %d, %Y')
             if msg_date != current_date:
                 current_date = msg_date
-                messages_html.append(f'<div class="date-separator">{msg_date}</div>')
-        
-        # Format content
-        if msg_type == 34:
-            if '翻译结果：' in content:
-                match = re.search(r'翻译结果：(.+)', content)
-                if match:
-                    content = f"🎤 {match.group(1).strip()}"
-                else:
-                    content = "🎤 [Voice]"
-            else:
-                content = "🎤 [Voice]"
-        elif msg_type == 3:
-            content = "🖼️ [Image]"
-        elif msg_type == 43:
-            content = "🎬 [Video]"
-        elif msg_type == 49:
-            title_match = re.search(r'<title[^>]*>([^<]+)</title>', content, re.IGNORECASE)
-            if title_match:
-                content = f"📎 {title_match.group(1)}"
-            else:
-                content = "📎 [Link/File]"
-        elif content.startswith('<voipmsg') or 'VoIPBubbleMsg' in content:
-            content = "📞 [Call]"
-        
-        if content.strip() and not content.startswith('<'):
-            time_str = msg_time.strftime('%I:%M %p') if msg_time else ''
-            side = 'sent' if is_sender else 'received'
-            
-            # Escape HTML
-            content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            
-            sender_html = ''
-            if sender_name and not is_sender:
-                safe_sender = sender_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                sender_html = f'<div class="sender">{safe_sender}</div>'
-            
-            messages_html.append(f'''
-            <div class="message {side}">
-                <div class="bubble">
-                    {sender_html}
-                    <div class="text">{content}</div>
-                    <div class="time">{time_str}</div>
-                </div>
+                messages_html.append(f'<div class="date-separator">{esc(msg_date)}</div>')
+
+        side = 'sent' if is_sender else 'received'
+        sender_html = ''
+        if sender_wxid and not is_sender:
+            sender_html = f'<div class="sender">{esc(senders.get(sender_wxid, sender_wxid))}</div>'
+        time_str = msg_time.strftime('%I:%M %p') if msg_time else ''
+
+        messages_html.append(f'''
+        <div class="message {side}">
+            <div class="bubble">
+                {sender_html}
+                {body}
+                <div class="time">{time_str}</div>
             </div>
-            ''')
-    
+        </div>''')
+
     conn.close()
-    
-    # WhatsApp-style HTML
-    html = f'''<!DOCTYPE html>
+
+    page = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat: {contact_name}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        
-        body {{
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background: #0b141a;
-            min-height: 100vh;
-        }}
-        
-        .header {{
-            background: #1f2c34;
-            padding: 16px 24px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }}
-        
-        .header h1 {{
-            color: #e9edef;
-            font-size: 1.2rem;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }}
-        
-        .header p {{
-            color: #8696a0;
-            font-size: 0.85rem;
-            margin-top: 4px;
-        }}
-        
-        .chat {{
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 20px;
-            background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23182229' fill-opacity='0.4'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-        }}
-        
-        .date-separator {{
-            text-align: center;
-            margin: 20px 0;
-        }}
-        
-        .date-separator {{
-            display: inline-block;
-            background: #182229;
-            color: #8696a0;
-            padding: 6px 16px;
-            border-radius: 8px;
-            font-size: 0.8rem;
-            margin: 16px auto;
-            display: block;
-            width: fit-content;
-        }}
-        
-        .message {{
-            display: flex;
-            margin-bottom: 4px;
-        }}
-        
-        .message.sent {{
-            justify-content: flex-end;
-        }}
-        
-        .message.received {{
-            justify-content: flex-start;
-        }}
-        
-        .bubble {{
-            max-width: 65%;
-            padding: 8px 12px;
-            border-radius: 8px;
-            position: relative;
-        }}
-        
-        .sent .bubble {{
-            background: #005c4b;
-            border-top-right-radius: 0;
-        }}
-        
-        .received .bubble {{
-            background: #1f2c34;
-            border-top-left-radius: 0;
-        }}
-        
-        .sender {{
-            color: #00a884;
-            font-size: 0.75rem;
-            font-weight: 500;
-            margin-bottom: 2px;
-        }}
-        
-        .text {{
-            color: #e9edef;
-            font-size: 0.9rem;
-            line-height: 1.4;
-            word-break: break-word;
-        }}
-        
-        .time {{
-            color: rgba(255,255,255,0.5);
-            font-size: 0.65rem;
-            text-align: right;
-            margin-top: 4px;
-        }}
-        
-        .footer {{
-            text-align: center;
-            padding: 40px;
-            color: #667781;
-            font-size: 0.85rem;
-        }}
-        
-        .footer a {{
-            color: #00a884;
-            text-decoration: none;
-        }}
-    </style>
+    <title>Chat: {esc(contact_name)}</title>
+    <style>{EXPORT_HTML_CSS}</style>
 </head>
 <body>
     <div class="header">
-        <h1>💬 {contact_name}</h1>
-        <p>Exported on {datetime.now().strftime('%B %d, %Y at %I:%M %p')} • {len(messages_html)} messages</p>
+        <h1>💬 {esc(contact_name)}</h1>
+        <p>Exported on {datetime.now().strftime('%B %d, %Y at %I:%M %p')} • {stats['messages']} messages</p>
     </div>
     <div class="chat">
         {''.join(messages_html)}
@@ -978,15 +942,12 @@ def export_chat_html(db_path, contact_id, contact_name):
     </div>
 </body>
 </html>'''
-    
-    safe_name = re.sub(r'[<>:"/\\|?*]', '_', contact_name)
-    filename = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    filepath = EXPORTS_DIR / "html" / filename
-    
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(html)
-    
-    return str(filepath), filename
+
+    index_path = out_dir / "index.html"
+    with open(index_path, 'w', encoding='utf-8') as f:
+        f.write(page)
+
+    return str(index_path), folder_name, stats
 
 
 # ============= FLASK ROUTES =============
@@ -1056,6 +1017,7 @@ def api_auto_decrypt():
             config = load_config()
             config['db_path'] = result['db_path']
             config['wxid'] = result['wxid']
+            config['wx_dir'] = result.get('wx_dir', '')
             config['key'] = result['key']
             config['setup_complete'] = True
             save_config(config)
@@ -1310,10 +1272,11 @@ def api_export():
         if format_type == 'json':
             filepath, filename = export_chat_json(db_path, contact_id, contact_name)
         elif format_type == 'html':
-            filepath, filename = export_chat_html(db_path, contact_id, contact_name)
+            filepath, filename, stats = export_chat_html(db_path, contact_id, contact_name)
+            return jsonify({'success': True, 'filepath': filepath, 'filename': filename, 'stats': stats})
         else:
             filepath, filename = export_chat_txt(db_path, contact_id, contact_name)
-        
+
         return jsonify({'success': True, 'filepath': filepath, 'filename': filename})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -1346,12 +1309,14 @@ def api_exports():
         format_path = EXPORTS_DIR / format_dir
         if format_path.exists():
             for f in format_path.iterdir():
-                if f.is_file():
+                # HTML exports are folders with an index.html and a media/ dir
+                target = f / 'index.html' if f.is_dir() else f
+                if target.is_file():
                     exports.append({
                         'name': f.name,
                         'format': format_dir,
-                        'path': str(f),
-                        'size': f.stat().st_size,
+                        'path': str(target),
+                        'size': target.stat().st_size,
                         'created': datetime.fromtimestamp(f.stat().st_ctime).strftime('%Y-%m-%d %H:%M')
                     })
     
@@ -1449,9 +1414,9 @@ def api_media(filepath):
     if not media_dir:
         return jsonify({'error': 'Media directory not found'}), 404
     
-    full_path = media_dir / filepath
-    
-    if not full_path.exists():
+    full_path = (media_dir / filepath).resolve()
+
+    if not media_export._inside(media_dir, full_path) or not full_path.is_file():
         return jsonify({'error': 'File not found'}), 404
     
     # Determine mime type

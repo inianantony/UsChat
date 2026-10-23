@@ -775,7 +775,39 @@ async function exportChat(format) {
     }
     
     showToast('Preparing export...', 'info');
-    
+
+    // HTML export copies images, videos and voice notes next to index.html,
+    // so it is written on the server side instead of downloaded as one file
+    if (format === 'html') {
+        try {
+            const res = await fetch('/api/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contact_id: currentContact.id,
+                    contact_name: currentContact.nickname || currentContact.id,
+                    format: 'html'
+                })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                showToast('Failed: ' + data.error, 'error');
+                return;
+            }
+            const s = data.stats || {};
+            const missing = (s.images_missing || 0) + (s.videos_missing || 0) + (s.voice_missing || 0);
+            showToast(
+                `Exported ${s.messages || 0} messages, ${s.images || 0} images, ${s.videos || 0} videos, ${s.voice || 0} voice notes` +
+                (missing ? ` (${missing} media not found)` : ''),
+                missing ? 'info' : 'success'
+            );
+            openFile(data.filepath);
+        } catch (err) {
+            showToast('Error: ' + err.message, 'error');
+        }
+        return;
+    }
+
     try {
         // Get export data from server
         const res = await fetch('/api/export-data', {

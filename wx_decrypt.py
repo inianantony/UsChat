@@ -698,7 +698,8 @@ def auto_decrypt() -> Dict:
     
     result['wxid'] = wxids[0]  # Use first account
     wx_dir = os.path.join(data_dir, result['wxid'])
-    
+    result['wx_dir'] = wx_dir
+
     # Step 4: Extract key from memory
     result['step'] = 'extract_key'
     pid = wechat_procs[0]['pid']

@@ -1,0 +1,3 @@
+# Optional: converts voice notes (SILK) to playable WAV in the HTML export.
+# Without it the raw .silk files are saved instead.
+pilk
