@@ -104,6 +104,8 @@ exports/html/<chat name>_<timestamp>/
 ### If images or videos show "not available on disk"
 Open the `FileStorage` folder under your account folder and check the files exist (folder names and file counts are enough, no need to open them). If the files exist but the export still says they are missing, the media paths stored in your WeChat build do not match what this tool expects. Note the numbers from the export message and report them.
 
+You can also run `python diagnose_media.py`. It prints how your WeChat build stores image and video paths (masked folder shapes and counts only, no names, message text or keys) and whether those files exist on disk. Check the output before sharing it.
+
 ### Security notes for this fork
 - Run it only on a machine you own or are authorized to use. It reads another process's memory to get the database key.
 - The decryption key is saved in plain text in `config.json`, and decrypted databases and exports are plain files in `data/` and `exports/`. Delete them when you are done.
