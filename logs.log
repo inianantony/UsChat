@@ -1,0 +1,56 @@
+
+[notice] A new release of pip is available: 25.2 -> 26.2.2
+[notice] To update, run: C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe -m pip install --upgrade pip
+
+C:\Users\User\code\UsChat>python -m pip install -r requirements-voice.txt
+Collecting pilk (from -r requirements-voice.txt (line 3))
+  Downloading pilk-0.2.4.tar.gz (226 kB)
+  Installing build dependencies ... done
+  Getting requirements to build wheel ... done
+  Preparing metadata (pyproject.toml) ... done
+Collecting typing_extensions (from pilk->-r requirements-voice.txt (line 3))
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Building wheels for collected packages: pilk
+  Building wheel for pilk (pyproject.toml) ... error
+  error: subprocess-exited-with-error
+
+  × Building wheel for pilk (pyproject.toml) did not run successfully.
+  │ exit code: 1
+  ╰─> [24 lines of output]
+      C:\Users\User\AppData\Local\Temp\pip-build-env-wujv3wze\overlay\Lib\site-packages\setuptools\dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+      !!
+
+              ********************************************************************************
+              Please consider removing the following classifiers in favor of a SPDX license expression:
+
+              License :: OSI Approved :: GNU General Public License v3 (GPLv3)
+
+              See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+              ********************************************************************************
+
+      !!
+        self._finalize_license_expression()
+      running bdist_wheel
+      running build
+      running build_py
+      creating build\lib.win-amd64-cpython-314\pilk
+      copying pilk\SilkDecoder.py -> build\lib.win-amd64-cpython-314\pilk
+      copying pilk\SilkEncoder.py -> build\lib.win-amd64-cpython-314\pilk
+      copying pilk\__init__.py -> build\lib.win-amd64-cpython-314\pilk
+      copying pilk\_pilk.pyi -> build\lib.win-amd64-cpython-314\pilk
+      running build_ext
+      building 'pilk._pilk' extension
+      error: Microsoft Visual C++ 14.0 or greater is required. Get it with "Microsoft C++ Build Tools": https://visualstudio.microsoft.com/visual-cpp-build-tools/
+      [end of output]
+
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+  ERROR: Failed building wheel for pilk
+Failed to build pilk
+
+[notice] A new release of pip is available: 25.2 -> 26.2.2
+[notice] To update, run: C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe -m pip install --upgrade pip
+error: failed-wheel-build-for-install
+
+× Failed to build installable wheels for some pyproject.toml based projects
+╰─> pilk
